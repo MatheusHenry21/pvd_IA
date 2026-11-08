@@ -1,0 +1,10 @@
+{
+  "description": "Streamlines sales, inventory, and customer management for small to medium retailers with a fast, clear, and professional point-of-sale system.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
