@@ -11,9 +11,20 @@ class ClienteSerializer(serializers.ModelSerializer):
     purchase_count = serializers.SerializerMethodField()
     purchases = serializers.SerializerMethodField()
     def get_purchase_count(self, obj):
-        return 0
+        return obj.sales.count()
     def get_purchases(self, obj):
-        return []
+        from django.utils import timezone
+        from vendas.models import Venda
+
+        methods = dict(Venda.PAYMENT_METHODS)
+        sales = obj.sales.order_by('-created_at', '-id')[:10]
+        return [{
+            'id': f'#{sale.id}',
+            'date': timezone.localtime(sale.created_at).strftime('%d/%m/%Y %H:%M'),
+            'total': float(sale.total),
+            'method': methods[sale.payment_method],
+            'status': 'Concluída',
+        } for sale in sales]
     def validate_cpf(self, value):
         digits = re.sub(r'\D', '', value)
         if len(digits) != 11 or len(set(digits)) == 1:

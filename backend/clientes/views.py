@@ -1,5 +1,5 @@
 import re
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, Value, When
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -20,7 +20,15 @@ class ClienteViewSet(viewsets.ModelViewSet):
             return queryset
         digits = re.sub(r'\D', '', search)
         matching = Q(name__icontains=search) | Q(cpf__icontains=digits or search) | Q(phone__icontains=digits or search)
-        return queryset.filter(matching)
+        return queryset.filter(matching).annotate(
+            match_rank=Case(
+                When(name__iexact=search, then=Value(0)),
+                When(name__istartswith=search, then=Value(1)),
+                When(name__icontains=search, then=Value(2)),
+                default=Value(3),
+                output_field=IntegerField(),
+            )
+        ).order_by('match_rank', 'name', 'id')
     def get_queryset(self):
         queryset = Cliente.objects.all()
         active = self.request.query_params.get('active')

@@ -13,7 +13,7 @@ ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1
 INSTALLED_APPS = [
     'django.contrib.admin', 'django.contrib.auth', 'django.contrib.contenttypes',
     'django.contrib.sessions', 'django.contrib.messages', 'django.contrib.staticfiles',
-    'rest_framework', 'rest_framework.authtoken', 'corsheaders', 'api', 'produtos', 'caixa', 'clientes',
+    'rest_framework', 'rest_framework.authtoken', 'corsheaders', 'api', 'produtos', 'caixa', 'clientes', 'vendas',
 ]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
