@@ -1,189 +1,233 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { authHeaders } from '../auth'
 
 interface Props {
   addToast: (type: 'success' | 'error' | 'warning' | 'info', msg: string) => void
 }
 
 type InstStatus = 'pendente' | 'pago' | 'vencido'
+type StatusFilter = InstStatus | 'all'
 
 interface Installment {
-  id: string; client: string; sale: string; num: string; dueDate: string; value: number; status: InstStatus; paymentDate?: string; paymentObs?: string
+  id: number
+  client: string
+  client_cpf: string | null
+  sale: string
+  sale_id: number
+  num: string
+  number: number
+  due_date: string
+  value: string
+  status: InstStatus
+  payment_date: string | null
+  payment_operator: string
+  payment_observation: string
 }
 
-const INITIAL: Installment[] = [
-  { id: '1', client: 'Carla Regina Santos', sale: '#00801', num: '1/3', dueDate: '05/10/2026', value: 106.67, status: 'pendente' },
-  { id: '2', client: 'Maria Fernanda Costa', sale: '#00790', num: '2/2', dueDate: '30/09/2026', value: 160.00, status: 'vencido' },
-  { id: '3', client: 'Fernando Augusto Ramos', sale: '#00770', num: '2/4', dueDate: '01/10/2026', value: 300.00, status: 'pendente' },
-  { id: '4', client: 'Roberto Carlos Lima', sale: '#00755', num: '1/2', dueDate: '15/09/2026', value: 250.00, status: 'vencido' },
-  { id: '5', client: 'Carla Regina Santos', sale: '#00801', num: '2/3', dueDate: '05/11/2026', value: 106.67, status: 'pendente' },
-  { id: '6', client: 'Maria Fernanda Costa', sale: '#00720', num: '3/3', dueDate: '20/09/2026', value: 80.00, status: 'pago', paymentDate: '20/09/2026 às 14:32', paymentObs: 'Recebido via Pix.' },
-  { id: '7', client: 'Fernando Augusto Ramos', sale: '#00770', num: '1/4', dueDate: '01/09/2026', value: 300.00, status: 'pago', paymentDate: '02/09/2026 às 09:18', paymentObs: 'Pagamento em dinheiro com 1 dia de atraso.' },
-  { id: '8', client: 'Patrícia Alves Mendes', sale: '#00810', num: '1/2', dueDate: '10/10/2026', value: 175.00, status: 'pendente' },
-]
-
-const STATUS_LABELS: Record<InstStatus, string> = {
-  pendente: 'Pendente',
-  pago: 'Pago',
-  vencido: 'Vencido',
-}
-
+const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '')
+const STATUS_LABELS: Record<InstStatus, string> = { pendente: 'Pendente', pago: 'Pago', vencido: 'Vencido' }
 const STATUS_STYLES: Record<InstStatus, string> = {
   pendente: 'bg-amber-50 text-amber-700 ring-amber-500/20',
   pago: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
   vencido: 'bg-red-50 text-red-700 ring-red-600/20',
 }
 
+function localDateISO(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function formatDate(value: string) {
+  const [year, month, day] = value.slice(0, 10).split('-')
+  return `${day}/${month}/${year}`
+}
+
+function money(value: number | string) {
+  const amount = Number(value)
+  return `R$ ${(Number.isFinite(amount) ? amount : 0).toFixed(2).replace('.', ',')}`
+}
+
+async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: {
+        ...authHeaders(),
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...options.headers,
+      },
+    })
+  } catch {
+    throw new Error('Não foi possível conectar ao servidor.')
+  }
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : 'Não foi possível concluir a operação.'
+    throw new Error(detail)
+  }
+  return data as T
+}
+
 export function Crediario({ addToast }: Props) {
-  const [installments, setInstallments] = useState<Installment[]>(INITIAL)
-  const [filterStatus, setFilterStatus] = useState<InstStatus | 'all'>('all')
+  const [installments, setInstallments] = useState<Installment[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [filterStatus, setFilterStatus] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
   const [payTarget, setPayTarget] = useState<Installment | null>(null)
   const [payObs, setPayObs] = useState('')
+  const [paying, setPaying] = useState(false)
   const [detailTarget, setDetailTarget] = useState<Installment | null>(null)
 
-  const filtered = installments.filter(i => {
-    const matchStatus = filterStatus === 'all' || i.status === filterStatus
-    const matchSearch = i.client.toLowerCase().includes(search.toLowerCase()) || i.sale.includes(search)
-    return matchStatus && matchSearch
-  })
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setLoadError('')
+    fetch(`${API_URL}/vendas/parcelas/?status=all`, { headers: authHeaders(), signal: controller.signal })
+      .then(async response => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erro ao carregar as parcelas.')
+        return data as { results: Installment[] }
+      })
+      .then(data => setInstallments(data.results))
+      .catch(error => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setLoadError(error instanceof Error ? error.message : 'Erro ao carregar as parcelas.')
+        }
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [refreshKey])
 
-  const totalOpen = installments.filter(i => i.status === 'pendente').reduce((s, i) => s + i.value, 0)
-  const totalOverdue = installments.filter(i => i.status === 'vencido').reduce((s, i) => s + i.value, 0)
-  const dueToday = installments.filter(i => i.status === 'pendente' && i.dueDate === '30/09/2026').length
-  const dueSoon = installments.filter(i => i.status === 'pendente').length
+  const today = localDateISO(new Date())
+  const nextWeek = localDateISO(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 6))
+  const filtered = useMemo(() => installments.filter(item => {
+    const matchesStatus = filterStatus === 'all' || item.status === filterStatus
+    const query = search.trim().toLocaleLowerCase('pt-BR')
+    const matchesSearch = !query ||
+      item.client.toLocaleLowerCase('pt-BR').includes(query) ||
+      item.client_cpf?.includes(query) ||
+      item.sale.toLocaleLowerCase().includes(query)
+    return matchesStatus && matchesSearch
+  }), [filterStatus, installments, search])
 
-  const handlePay = () => {
+  const pending = installments.filter(item => item.status === 'pendente')
+  const overdue = installments.filter(item => item.status === 'vencido')
+  const totalOpen = pending.reduce((sum, item) => sum + Number(item.value), 0)
+  const totalOverdue = overdue.reduce((sum, item) => sum + Number(item.value), 0)
+  const dueToday = pending.filter(item => item.due_date === today).length
+  const dueSoon = pending.filter(item => item.due_date >= today && item.due_date <= nextWeek).length
+
+  const handlePay = async () => {
     if (!payTarget) return
-    const paymentDate = `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
-    setInstallments(prev => prev.map(i => i.id === payTarget.id ? { ...i, status: 'pago', paymentDate, paymentObs: payObs || 'Sem observações.' } : i))
-    addToast('success', `Parcela ${payTarget.num} de ${payTarget.client} registrada como paga.`)
-    setPayTarget(null)
-    setPayObs('')
+    setPaying(true)
+    try {
+      await apiRequest<Installment>(`/vendas/parcelas/${payTarget.id}/pagar/`, {
+        method: 'POST',
+        body: JSON.stringify({ observation: payObs }),
+      })
+      addToast('success', `Parcela ${payTarget.num} de ${payTarget.client} registrada como paga.`)
+      setPayTarget(null)
+      setPayObs('')
+      setRefreshKey(key => key + 1)
+    } catch (error) {
+      addToast('error', error instanceof Error ? error.message : 'Não foi possível registrar o pagamento.')
+    } finally {
+      setPaying(false)
+    }
   }
 
   return (
-    <div className="p-6 space-y-5 max-w-screen-2xl mx-auto">
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="mx-auto max-w-screen-2xl space-y-5 p-6">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {[
-          { label: 'Total em aberto', value: `R$ ${totalOpen.toFixed(2).replace('.', ',')}`, sub: `${installments.filter(i => i.status === 'pendente').length} parcelas`, color: 'text-gray-900', bg: 'bg-white' },
-          { label: 'Total vencido', value: `R$ ${totalOverdue.toFixed(2).replace('.', ',')}`, sub: `${installments.filter(i => i.status === 'vencido').length} parcelas`, color: 'text-red-600', bg: 'bg-red-50 border-red-200' },
+          { label: 'Total em aberto', value: money(totalOpen), sub: `${pending.length} parcelas`, color: 'text-gray-900', bg: 'bg-white border-gray-200' },
+          { label: 'Total vencido', value: money(totalOverdue), sub: `${overdue.length} parcelas`, color: 'text-red-600', bg: 'bg-red-50 border-red-200' },
           { label: 'Vencem hoje', value: String(dueToday), sub: 'Parcelas do dia', color: 'text-amber-600', bg: 'bg-amber-50 border-amber-200' },
           { label: 'Próximos 7 dias', value: String(dueSoon), sub: 'Parcelas a vencer', color: 'text-blue-600', bg: 'bg-blue-50 border-blue-200' },
-        ].map(s => (
-          <div key={s.label} className={`rounded-xl border p-5 ${s.bg}`}>
-            <p className="text-sm text-gray-500 mb-2">{s.label}</p>
-            <p className={`font-display font-700 text-2xl ${s.color}`}>{s.value}</p>
-            <p className="text-xs text-gray-400 mt-1">{s.sub}</p>
-          </div>
-        ))}
+        ].map(card => <div key={card.label} className={`rounded-xl border p-5 ${card.bg}`}>
+          <p className="mb-2 text-sm text-gray-500">{card.label}</p><p className={`font-display text-2xl font-700 ${card.color}`}>{card.value}</p><p className="mt-1 text-xs text-gray-400">{card.sub}</p>
+        </div>)}
       </div>
 
-      {/* Filters + Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="flex flex-wrap items-center gap-3 p-4 border-b border-gray-100">
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+        <div className="flex flex-wrap items-center gap-3 border-b border-gray-100 p-4">
           <div className="relative">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar cliente ou venda..." className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56" />
+            <svg className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input type="text" value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar cliente, CPF ou venda..." className="w-64 rounded-lg border border-gray-300 py-2 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          <div className="flex gap-1.5">
-            {(['all', 'pendente', 'vencido', 'pago'] as const).map(s => (
-              <button
-                key={s}
-                onClick={() => setFilterStatus(s)}
-                className={`px-3 py-2 text-sm rounded-lg font-medium transition-colors ${filterStatus === s ? 'bg-blue-600 text-white' : 'bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100'}`}
-              >
-                {s === 'all' ? 'Todos' : STATUS_LABELS[s]}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-1.5">
+            {(['all', 'pendente', 'vencido', 'pago'] as const).map(status => <button key={status} onClick={() => setFilterStatus(status)} className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>{status === 'all' ? 'Todas' : STATUS_LABELS[status]}</button>)}
           </div>
         </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50">
-              {['Cliente', 'Venda', 'Parcela', 'Vencimento', 'Valor', 'Status', 'Ações'].map(h => (
-                <th key={h} className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-5 py-3">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {filtered.length === 0 ? (
-              <tr><td colSpan={7} className="text-center py-16 text-gray-400 text-sm">Nenhuma parcela encontrada.</td></tr>
-            ) : filtered.map(inst => (
-              <tr key={inst.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-5 py-3.5 font-medium text-gray-900">{inst.client}</td>
-                <td className="px-5 py-3.5 text-blue-600 font-medium">{inst.sale}</td>
-                <td className="px-5 py-3.5 text-gray-600">{inst.num}</td>
-                <td className={`px-5 py-3.5 font-medium ${inst.status === 'vencido' ? 'text-red-600' : 'text-gray-700'}`}>{inst.dueDate}</td>
-                <td className="px-5 py-3.5 font-semibold text-gray-900">R$ {inst.value.toFixed(2).replace('.', ',')}</td>
-                <td className="px-5 py-3.5">
-                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLES[inst.status]}`}>
-                    {STATUS_LABELS[inst.status]}
-                  </span>
-                </td>
-                <td className="px-5 py-3.5">
-                  {inst.status !== 'pago' ? (
-                    <button onClick={() => setPayTarget(inst)} className="text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors">
-                      Registrar pagamento
-                    </button>
-                  ) : <button onClick={() => setDetailTarget(inst)} className="text-xs font-medium text-blue-600 hover:text-blue-800">Ver pagamento</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="px-5 py-3 border-t border-gray-100 bg-gray-50">
-          <span className="text-xs text-gray-500">{filtered.length} parcelas</span>
-        </div>
+        {loading ? <div className="p-16 text-center text-sm text-gray-500">Carregando parcelas do banco de dados...</div> :
+          loadError ? <div className="p-16 text-center"><p className="mb-3 text-sm text-red-600">{loadError}</p><button onClick={() => setRefreshKey(key => key + 1)} className="text-sm font-semibold text-blue-600">Tentar novamente</button></div> :
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[850px] text-sm">
+              <thead><tr className="bg-gray-50">{['Cliente', 'Venda', 'Parcela', 'Vencimento', 'Valor', 'Status', 'Ações'].map(label => <th key={label} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-50">
+                {filtered.length === 0 ? <tr><td colSpan={7} className="py-16 text-center text-sm text-gray-400">Nenhuma parcela encontrada.</td></tr> :
+                  filtered.map(item => <tr key={item.id} className="transition-colors hover:bg-gray-50">
+                    <td className="px-5 py-3.5 font-medium text-gray-900">{item.client}</td>
+                    <td className="px-5 py-3.5 font-medium text-blue-600">{item.sale}</td>
+                    <td className="px-5 py-3.5 text-gray-600">{item.num}</td>
+                    <td className={`px-5 py-3.5 font-medium ${item.status === 'vencido' ? 'text-red-600' : 'text-gray-700'}`}>{formatDate(item.due_date)}</td>
+                    <td className="px-5 py-3.5 font-semibold text-gray-900">{money(item.value)}</td>
+                    <td className="px-5 py-3.5"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLES[item.status]}`}>{STATUS_LABELS[item.status]}</span></td>
+                    <td className="px-5 py-3.5">{item.status === 'pago' ?
+                      <button onClick={() => setDetailTarget(item)} className="text-xs font-medium text-blue-600 hover:text-blue-800">Ver pagamento</button> :
+                      <button onClick={() => setPayTarget(item)} className="text-xs font-medium text-blue-600 transition-colors hover:text-blue-800">Registrar pagamento</button>}
+                    </td>
+                  </tr>)
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+        <div className="border-t border-gray-100 bg-gray-50 px-5 py-3"><span className="text-xs text-gray-500">{filtered.length} parcelas</span></div>
       </div>
 
-      {detailTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setDetailTarget(null)} />
-          <div className="relative z-10 bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="p-6 border-b border-gray-100 flex justify-between"><div><p className="text-xs font-semibold text-emerald-600 uppercase tracking-wide">Pagamento confirmado</p><h3 className="font-display font-700 text-gray-900 text-lg mt-1">{detailTarget.client}</h3></div><button onClick={() => setDetailTarget(null)} className="text-gray-400"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button></div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-3">{[['Venda', detailTarget.sale], ['Parcela', detailTarget.num], ['Vencimento', detailTarget.dueDate], ['Valor', `R$ ${detailTarget.value.toFixed(2).replace('.', ',')}`]].map(([label, value]) => <div key={label} className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-400">{label}</p><p className="text-sm font-semibold text-gray-800 mt-1">{value}</p></div>)}</div>
-              <div><p className="text-xs font-medium text-gray-500 mb-1">Pago em</p><p className="text-sm font-semibold text-gray-900">{detailTarget.paymentDate}</p></div>
-              <div><p className="text-xs font-medium text-gray-500 mb-1">Observação do pagamento</p><p className="text-sm text-gray-700 bg-blue-50 border border-blue-100 rounded-lg p-3">{detailTarget.paymentObs}</p></div>
-              <div className="border-t border-gray-100 pt-4"><p className="text-xs font-semibold text-gray-500 mb-3">Histórico desta venda</p><div className="flex gap-3"><span className="w-2 h-2 rounded-full bg-emerald-500 mt-1.5" /><div><p className="text-sm font-medium text-gray-800">Parcela {detailTarget.num} paga</p><p className="text-xs text-gray-400 mt-0.5">{detailTarget.paymentDate} · por Ana Martins</p></div></div></div>
-            </div>
+      {detailTarget && <Modal title="Pagamento confirmado" onClose={() => setDetailTarget(null)}>
+        <div className="space-y-4">
+          <p className="text-sm font-medium text-gray-800">{detailTarget.client} · venda {detailTarget.sale}</p>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              ['Parcela', detailTarget.num], ['Vencimento', formatDate(detailTarget.due_date)],
+              ['Valor', money(detailTarget.value)], ['Pago em', detailTarget.payment_date ? new Date(detailTarget.payment_date).toLocaleString('pt-BR') : '—'],
+            ].map(([label, value]) => <div key={label} className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-400">{label}</p><p className="mt-1 text-sm font-semibold text-gray-800">{value}</p></div>)}
           </div>
+          <div><p className="mb-1 text-xs font-medium text-gray-500">Recebido por</p><p className="text-sm text-gray-800">{detailTarget.payment_operator || '—'}</p></div>
+          <div><p className="mb-1 text-xs font-medium text-gray-500">Observação do pagamento</p><p className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-gray-700">{detailTarget.payment_observation || 'Sem observações.'}</p></div>
         </div>
-      )}
+      </Modal>}
 
-      {/* Pay modal */}
-      {payTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setPayTarget(null)} />
-          <div className="relative z-10 bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-              <h3 className="font-display font-700 text-gray-900 text-lg">Registrar Pagamento</h3>
-              <button onClick={() => setPayTarget(null)} className="text-gray-400 hover:text-gray-600"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="bg-gray-50 rounded-xl p-4 space-y-2">
-                <div className="flex justify-between text-sm"><span className="text-gray-500">Cliente</span><span className="font-medium text-gray-900">{payTarget.client}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-gray-500">Venda</span><span className="font-medium text-blue-600">{payTarget.sale}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-gray-500">Parcela</span><span className="font-medium text-gray-900">{payTarget.num}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-gray-500">Vencimento</span><span className={`font-medium ${payTarget.status === 'vencido' ? 'text-red-600' : 'text-gray-900'}`}>{payTarget.dueDate}</span></div>
-                <div className="flex justify-between text-sm border-t border-gray-200 pt-2 mt-1">
-                  <span className="text-gray-500 font-semibold">Valor</span>
-                  <span className="font-display font-700 text-lg text-gray-900">R$ {payTarget.value.toFixed(2).replace('.', ',')}</span>
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Observação</label>
-                <textarea value={payObs} onChange={e => setPayObs(e.target.value)} rows={2} className="w-full border border-gray-300 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="Opcional..." />
-              </div>
-            </div>
-            <div className="flex gap-3 p-6 pt-0">
-              <button onClick={() => setPayTarget(null)} className="flex-1 border border-gray-300 text-gray-700 text-sm font-medium py-2.5 rounded-lg hover:bg-gray-50">Cancelar</button>
-              <button onClick={handlePay} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold py-2.5 rounded-lg">Confirmar Pagamento</button>
-            </div>
+      {payTarget && <Modal title="Registrar pagamento" onClose={() => { if (!paying) setPayTarget(null) }}>
+        <div className="space-y-4">
+          <div className="space-y-2 rounded-xl bg-gray-50 p-4">
+            <div className="flex justify-between text-sm"><span className="text-gray-500">Cliente</span><span className="font-medium text-gray-900">{payTarget.client}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-gray-500">Venda</span><span className="font-medium text-blue-600">{payTarget.sale}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-gray-500">Parcela</span><span className="font-medium text-gray-900">{payTarget.num}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-gray-500">Vencimento</span><span className="font-medium text-gray-900">{formatDate(payTarget.due_date)}</span></div>
+            <div className="mt-1 flex justify-between border-t border-gray-200 pt-2 text-sm font-semibold"><span className="text-gray-500">Valor</span><span className="text-lg text-gray-900">{money(payTarget.value)}</span></div>
+          </div>
+          <div><label htmlFor="installment-payment-observation" className="mb-1.5 block text-sm font-medium text-gray-700">Observação</label><textarea id="installment-payment-observation" value={payObs} onChange={event => setPayObs(event.target.value)} rows={2} maxLength={5000} className="w-full resize-none rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Opcional..." /></div>
+          <div className="flex gap-3">
+            <button disabled={paying} onClick={() => setPayTarget(null)} className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60">Cancelar</button>
+            <button disabled={paying} onClick={handlePay} className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60">{paying ? 'Registrando...' : 'Confirmar pagamento'}</button>
           </div>
         </div>
-      )}
+      </Modal>}
     </div>
   )
+}
+
+function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <button aria-label="Fechar janela" className="absolute inset-0 cursor-default bg-black/40 backdrop-blur-sm" onClick={onClose} />
+    <div className="relative z-10 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+      <div className="mb-4 flex items-center justify-between"><h3 className="font-display text-lg font-700 text-gray-900">{title}</h3><button onClick={onClose} aria-label="Fechar" className="text-gray-400 hover:text-gray-600"><svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg></button></div>
+      {children}
+    </div>
+  </div>
 }

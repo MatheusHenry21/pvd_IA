@@ -44,9 +44,11 @@ interface SaleRecord {
   cash_received: string | null
   change: string
   items: { product_name: string; product_code: string; quantity: number; unit_price: string; line_total: string }[]
+  installments: { number: number; due_date: string; value: string }[]
 }
 
 interface ApiList<T> { results: T[] }
+interface InstallmentPreview { number: number; dueDate: string; value: number }
 
 const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '')
 const paymentLabels: Record<PayMethod, string> = {
@@ -95,6 +97,35 @@ function parseMoney(value: string) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
 }
 
+function localDateISO(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function addCalendarMonth(dateISO: string, monthOffset: number) {
+  const [year, month, day] = dateISO.split('-').map(Number)
+  const monthIndex = month - 1 + monthOffset
+  const targetYear = year + Math.floor(monthIndex / 12)
+  const targetMonth = ((monthIndex % 12) + 12) % 12
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate()
+  return localDateISO(new Date(targetYear, targetMonth, Math.min(day, lastDay)))
+}
+
+function formatDateISO(dateISO: string) {
+  const [year, month, day] = dateISO.split('-')
+  return `${day}/${month}/${year}`
+}
+
+function makeInstallmentPreview(total: number, count: number, firstDueDate: string): InstallmentPreview[] {
+  if (!firstDueDate || count < 1) return []
+  const totalCents = Math.round(total * 100)
+  const regularCents = Math.floor(totalCents / count)
+  return Array.from({ length: count }, (_, index) => ({
+    number: index + 1,
+    dueDate: addCalendarMonth(firstDueDate, index),
+    value: (index === count - 1 ? totalCents - regularCents * (count - 1) : regularCents) / 100,
+  }))
+}
+
 export function Sales({ addToast }: Props) {
   const toastRef = useRef(addToast)
   toastRef.current = addToast
@@ -104,6 +135,8 @@ export function Sales({ addToast }: Props) {
   const [items, setItems] = useState<SaleItem[]>([])
   const [discount, setDiscount] = useState('')
   const [payMethod, setPayMethod] = useState<PayMethod | null>(null)
+  const [installmentCount, setInstallmentCount] = useState('1')
+  const [firstDueDate, setFirstDueDate] = useState(() => addCalendarMonth(localDateISO(new Date()), 1))
   const [cashGiven, setCashGiven] = useState('')
   const [obs, setObs] = useState('')
   const [saleFinished, setSaleFinished] = useState(false)
@@ -201,6 +234,9 @@ export function Sales({ addToast }: Props) {
   const total = Math.max(0, subtotal - discountValue)
   const cashAmount = parseMoney(cashGiven)
   const change = payMethod === 'dinheiro' ? cashAmount - total : 0
+  const installmentPreview = payMethod === 'crediario'
+    ? makeInstallmentPreview(total, Number(installmentCount), firstDueDate)
+    : []
 
   const addItem = (product: Product) => {
     if (product.stock < 1) {
@@ -241,6 +277,8 @@ export function Sales({ addToast }: Props) {
     setItems([])
     setDiscount('')
     setPayMethod(null)
+    setInstallmentCount('1')
+    setFirstDueDate(addCalendarMonth(localDateISO(new Date()), 1))
     setCashGiven('')
     setObs('')
     setSaleFinished(false)
@@ -254,6 +292,7 @@ export function Sales({ addToast }: Props) {
     if (discountValue > subtotal) { addToast('error', 'O desconto não pode ser maior que o subtotal.'); return }
     if (payMethod === 'dinheiro' && cashAmount < total) { addToast('error', 'O valor recebido deve ser igual ou maior que o total.'); return }
     if (payMethod === 'crediario' && !selectedClient) { addToast('error', 'Selecione um cliente para vender no crediário.'); return }
+    if (payMethod === 'crediario' && (!firstDueDate || firstDueDate < localDateISO(new Date()))) { addToast('error', 'Informe um primeiro vencimento válido, a partir de hoje.'); return }
 
     setSavingSale(true)
     try {
@@ -266,6 +305,10 @@ export function Sales({ addToast }: Props) {
           payment_method: payMethod,
           cash_received: payMethod === 'dinheiro' ? cashAmount.toFixed(2) : null,
           client_id: selectedClient?.id ?? null,
+          ...(payMethod === 'crediario' ? {
+            installment_count: Number(installmentCount),
+            first_due_date: firstDueDate,
+          } : {}),
           observation: obs,
         }),
       })
@@ -317,6 +360,7 @@ export function Sales({ addToast }: Props) {
                           <div className="space-y-1">{sale.items.map((item, index) => <p key={index} className="text-sm text-gray-700">{item.quantity} × {item.product_name} — {money(item.line_total)}</p>)}</div>
                         </div>
                         {sale.payment_method === 'dinheiro' && <div className="text-sm text-gray-700">Recebido {money(sale.cash_received || 0)} · Troco {money(sale.change)}</div>}
+                        {sale.installments.length > 0 && <div className="md:col-span-3"><p className="mb-2 text-xs text-gray-400">Parcelas do crediário</p><div className="flex flex-wrap gap-2">{sale.installments.map(part => <span key={part.number} className="rounded-lg border border-amber-100 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">{part.number}/{sale.installments.length} · {formatDateISO(part.due_date)} · {money(part.value)}</span>)}</div></div>}
                       </div>
                     )}
                   </div>
@@ -344,6 +388,7 @@ export function Sales({ addToast }: Props) {
             <div className="mt-1 flex justify-between border-t border-gray-200 pt-2 text-sm font-semibold"><span>Total</span><span>{money(savedSale.total)}</span></div>
             {savedSale.payment_method === 'dinheiro' && <div className="flex justify-between text-sm"><span className="text-gray-500">Troco</span><span className="font-medium text-emerald-600">{money(savedSale.change)}</span></div>}
           </div>
+          {savedSale.installments.length > 0 && <div className="mb-5 rounded-xl border border-amber-100 bg-amber-50 p-4 text-left"><p className="mb-2 text-sm font-semibold text-amber-900">Parcelas do crediário</p><div className="space-y-1">{savedSale.installments.map(part => <p key={part.number} className="flex justify-between gap-3 text-xs text-amber-800"><span>{part.number}/{savedSale.installments.length} · vencimento {formatDateISO(part.due_date)}</span><strong>{money(part.value)}</strong></p>)}</div></div>}
           {savedSale.observation && <p className="mb-5 rounded-lg border border-blue-100 bg-blue-50 p-3 text-left text-sm text-gray-700">{savedSale.observation}</p>}
           <div className="flex gap-3">
             <button onClick={resetSale} className="flex-1 rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700">Nova venda</button>
@@ -427,6 +472,26 @@ export function Sales({ addToast }: Props) {
               ] as { id: PayMethod; label: string; icon: string }[]).map(method => <button key={method.id} onClick={() => setPayMethod(method.id)} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all ${payMethod === method.id ? 'border-blue-600 bg-blue-600 text-white shadow-sm' : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'} ${method.id === 'crediario' ? 'col-span-2' : ''}`}><span>{method.icon}</span>{method.label}</button>)}
             </div>
           </div>
+
+          {payMethod === 'crediario' && <div className="space-y-3 rounded-xl border border-amber-100 bg-amber-50/60 p-3.5">
+            <p className="text-sm font-semibold text-gray-800">Condições do crediário</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="sale-installment-count" className="mb-1 block text-xs text-gray-500">Quantidade</label>
+                <select id="sale-installment-count" value={installmentCount} onChange={event => setInstallmentCount(event.target.value)} className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
+                  {Array.from({ length: 12 }, (_, index) => index + 1).map(count => <option key={count} value={count}>{count} {count === 1 ? 'parcela' : 'parcelas'}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="sale-first-due-date" className="mb-1 block text-xs text-gray-500">1º vencimento</label>
+                <input id="sale-first-due-date" type="date" min={localDateISO(new Date())} value={firstDueDate} onChange={event => setFirstDueDate(event.target.value)} className="w-full rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500">As próximas parcelas vencem no mesmo dia, mês a mês. Se o mês não tiver esse dia, será usado o último dia do mês.</p>
+            <div className="max-h-32 space-y-1 overflow-y-auto border-t border-amber-100 pt-2">
+              {installmentPreview.map(part => <div key={part.number} className="flex justify-between text-xs text-gray-700"><span>Parcela {part.number}/{installmentPreview.length} · {formatDateISO(part.dueDate)}</span><strong>{money(part.value)}</strong></div>)}
+            </div>
+          </div>}
 
           <div>
             <label htmlFor="sale-observation" className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-400">Observação (opcional)</label>

@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ from rest_framework.test import APIClient
 from caixa.models import Caixa, Movimentacao
 from clientes.models import Cliente
 from produtos.models import Categoria, Produto
-from .models import ItemVenda, Venda
+from .models import ItemVenda, Parcela, Venda
 
 
 @override_settings(DEBUG=False)
@@ -116,6 +117,8 @@ class SalesApiTests(TestCase):
                 items=[{'product_id': self.product.pk, 'quantity': 1}],
                 client_id=client.pk if method == 'crediario' else None,
             )
+            if method == 'crediario':
+                body.update(installment_count=1, first_due_date='2026-12-10')
             if method == 'dinheiro':
                 body['cash_received'] = '30.00'
             response = self.api.post('/api/vendas/', body, format='json')
@@ -125,10 +128,87 @@ class SalesApiTests(TestCase):
         client.refresh_from_db()
         self.assertEqual(client.debt_balance, Decimal('25.50'))
         self.assertEqual(Venda.objects.count(), 5)
-        self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa, category='venda').count(), 5)
+        self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa, category='venda').count(), 4)
         self.caixa.refresh_from_db()
-        self.assertEqual(self.caixa.balance, Decimal('227.50'))
+        self.assertEqual(self.caixa.balance, Decimal('202.00'))
         self.assertIsNone(Venda.objects.get(payment_method='pix').cash_received)
+
+    def test_credit_sale_generates_monthly_due_dates_and_balanced_cent_values(self):
+        client = self.make_client()
+
+        response = self.api.post('/api/vendas/', self.payload(
+            payment_method='crediario',
+            client_id=client.pk,
+            installment_count=3,
+            first_due_date='2027-01-31',
+        ), format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        installments = Parcela.objects.filter(sale_id=response.data['id']).order_by('number')
+        self.assertEqual(list(installments.values_list('due_date', flat=True)), [
+            date(2027, 1, 31), date(2027, 2, 28), date(2027, 3, 31),
+        ])
+        self.assertEqual(list(installments.values_list('value', flat=True)), [
+            Decimal('16.66'), Decimal('16.66'), Decimal('16.68'),
+        ])
+        self.assertEqual(sum(installments.values_list('value', flat=True)), Decimal('50.00'))
+        self.assertEqual(len(response.data['installments']), 3)
+
+    def test_installment_payment_updates_customer_debt_and_cash_once(self):
+        client = self.make_client()
+        sale_response = self.api.post('/api/vendas/', self.payload(
+            payment_method='crediario',
+            client_id=client.pk,
+            installment_count=2,
+            first_due_date='2026-12-10',
+        ), format='json')
+        self.assertEqual(sale_response.status_code, 201, sale_response.data)
+        installment = Parcela.objects.filter(sale_id=sale_response.data['id']).order_by('number').first()
+
+        response = self.api.post(
+            f'/api/vendas/parcelas/{installment.pk}/pagar/',
+            {'observation': 'Recebido em dinheiro.'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['status'], 'pago')
+        self.assertEqual(response.data['payment_operator'], 'Ana Martins')
+        self.assertEqual(response.data['payment_observation'], 'Recebido em dinheiro.')
+        client.refresh_from_db()
+        self.caixa.refresh_from_db()
+        self.assertEqual(client.debt_balance, Decimal('25.00'))
+        self.assertEqual(self.caixa.balance, Decimal('125.00'))
+        self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa).count(), 1)
+
+        duplicate = self.api.post(
+            f'/api/vendas/parcelas/{installment.pk}/pagar/',
+            {'observation': 'Tentativa repetida.'},
+            format='json',
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa).count(), 1)
+
+    def test_installment_payment_is_blocked_when_cash_is_closed(self):
+        client = self.make_client()
+        sale_response = self.api.post('/api/vendas/', self.payload(
+            payment_method='crediario',
+            client_id=client.pk,
+            installment_count=1,
+            first_due_date='2026-12-10',
+        ), format='json')
+        installment = Parcela.objects.get(sale_id=sale_response.data['id'])
+        self.caixa.is_open = False
+        self.caixa.save(update_fields=['is_open'])
+
+        response = self.api.post(f'/api/vendas/parcelas/{installment.pk}/pagar/', {}, format='json')
+
+        self.assertEqual(response.status_code, 409)
+        installment.refresh_from_db()
+        client.refresh_from_db()
+        self.assertEqual(installment.status, 'pendente')
+        self.assertEqual(client.debt_balance, Decimal('50.00'))
+        self.assertEqual(Movimentacao.objects.count(), 0)
 
     def test_client_lookup_prioritizes_similar_names_and_returns_at_most_five(self):
         for index in range(7):
@@ -179,7 +259,7 @@ class SalesApiTests(TestCase):
 
         response = self.api.post(
             '/api/vendas/',
-            self.payload(payment_method='crediario', client_id=client.pk),
+            self.payload(payment_method='crediario', client_id=client.pk, first_due_date='2026-12-10'),
             format='json',
         )
 
