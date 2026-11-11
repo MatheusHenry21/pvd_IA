@@ -7,6 +7,7 @@ interface Props {
 
 type InstStatus = 'pendente' | 'pago' | 'vencido'
 type StatusFilter = InstStatus | 'all'
+type InstallmentPaymentMethod = 'pix' | 'dinheiro' | 'debito' | 'credito'
 
 interface Installment {
   id: number
@@ -21,15 +22,23 @@ interface Installment {
   status: InstStatus
   payment_date: string | null
   payment_operator: string
+  payment_method: InstallmentPaymentMethod | null
   payment_observation: string
 }
 
 const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '')
+const PER_PAGE = 10
 const STATUS_LABELS: Record<InstStatus, string> = { pendente: 'Pendente', pago: 'Pago', vencido: 'Vencido' }
 const STATUS_STYLES: Record<InstStatus, string> = {
   pendente: 'bg-amber-50 text-amber-700 ring-amber-500/20',
   pago: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
   vencido: 'bg-red-50 text-red-700 ring-red-600/20',
+}
+const PAYMENT_METHOD_LABELS: Record<InstallmentPaymentMethod, string> = {
+  pix: 'PIX',
+  dinheiro: 'Dinheiro',
+  debito: 'Cartão de débito',
+  credito: 'Cartão de crédito',
 }
 
 function localDateISO(date: Date) {
@@ -75,8 +84,10 @@ export function Crediario({ addToast }: Props) {
   const [refreshKey, setRefreshKey] = useState(0)
   const [filterStatus, setFilterStatus] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
   const [payTarget, setPayTarget] = useState<Installment | null>(null)
   const [payObs, setPayObs] = useState('')
+  const [payMethod, setPayMethod] = useState<InstallmentPaymentMethod | null>(null)
   const [paying, setPaying] = useState(false)
   const [detailTarget, setDetailTarget] = useState<Installment | null>(null)
 
@@ -111,6 +122,11 @@ export function Crediario({ addToast }: Props) {
       item.sale.toLocaleLowerCase().includes(query)
     return matchesStatus && matchesSearch
   }), [filterStatus, installments, search])
+  const pages = Math.max(1, Math.ceil(filtered.length / PER_PAGE))
+  const currentPage = Math.min(page, pages)
+  const paginated = filtered.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE)
+  const rangeStart = filtered.length === 0 ? 0 : (currentPage - 1) * PER_PAGE + 1
+  const rangeEnd = Math.min(currentPage * PER_PAGE, filtered.length)
 
   const pending = installments.filter(item => item.status === 'pendente')
   const overdue = installments.filter(item => item.status === 'vencido')
@@ -121,11 +137,15 @@ export function Crediario({ addToast }: Props) {
 
   const handlePay = async () => {
     if (!payTarget) return
+    if (!payMethod) {
+      addToast('error', 'Selecione a forma de recebimento.')
+      return
+    }
     setPaying(true)
     try {
       await apiRequest<Installment>(`/vendas/parcelas/${payTarget.id}/pagar/`, {
         method: 'POST',
-        body: JSON.stringify({ observation: payObs }),
+        body: JSON.stringify({ payment_method: payMethod, observation: payObs }),
       })
       addToast('success', `Parcela ${payTarget.num} de ${payTarget.client} registrada como paga.`)
       setPayTarget(null)
@@ -155,10 +175,10 @@ export function Crediario({ addToast }: Props) {
         <div className="flex flex-wrap items-center gap-3 border-b border-gray-100 p-4">
           <div className="relative">
             <svg className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            <input type="text" value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar cliente, CPF ou venda..." className="w-64 rounded-lg border border-gray-300 py-2 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input type="text" value={search} onChange={event => { setSearch(event.target.value); setPage(1) }} placeholder="Buscar cliente, CPF ou venda..." className="w-64 rounded-lg border border-gray-300 py-2 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {(['all', 'pendente', 'vencido', 'pago'] as const).map(status => <button key={status} onClick={() => setFilterStatus(status)} className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>{status === 'all' ? 'Todas' : STATUS_LABELS[status]}</button>)}
+            {(['all', 'pendente', 'vencido', 'pago'] as const).map(status => <button key={status} onClick={() => { setFilterStatus(status); setPage(1) }} className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}>{status === 'all' ? 'Todas' : STATUS_LABELS[status]}</button>)}
           </div>
         </div>
         {loading ? <div className="p-16 text-center text-sm text-gray-500">Carregando parcelas do banco de dados...</div> :
@@ -168,7 +188,7 @@ export function Crediario({ addToast }: Props) {
               <thead><tr className="bg-gray-50">{['Cliente', 'Venda', 'Parcela', 'Vencimento', 'Valor', 'Status', 'Ações'].map(label => <th key={label} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</th>)}</tr></thead>
               <tbody className="divide-y divide-gray-50">
                 {filtered.length === 0 ? <tr><td colSpan={7} className="py-16 text-center text-sm text-gray-400">Nenhuma parcela encontrada.</td></tr> :
-                  filtered.map(item => <tr key={item.id} className="transition-colors hover:bg-gray-50">
+                  paginated.map(item => <tr key={item.id} className="transition-colors hover:bg-gray-50">
                     <td className="px-5 py-3.5 font-medium text-gray-900">{item.client}</td>
                     <td className="px-5 py-3.5 font-medium text-blue-600">{item.sale}</td>
                     <td className="px-5 py-3.5 text-gray-600">{item.num}</td>
@@ -177,7 +197,7 @@ export function Crediario({ addToast }: Props) {
                     <td className="px-5 py-3.5"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLES[item.status]}`}>{STATUS_LABELS[item.status]}</span></td>
                     <td className="px-5 py-3.5">{item.status === 'pago' ?
                       <button onClick={() => setDetailTarget(item)} className="text-xs font-medium text-blue-600 hover:text-blue-800">Ver pagamento</button> :
-                      <button onClick={() => setPayTarget(item)} className="text-xs font-medium text-blue-600 transition-colors hover:text-blue-800">Registrar pagamento</button>}
+                      <button onClick={() => { setPayTarget(item); setPayMethod(null); setPayObs('') }} className="text-xs font-medium text-blue-600 transition-colors hover:text-blue-800">Registrar pagamento</button>}
                     </td>
                   </tr>)
                 }
@@ -185,7 +205,14 @@ export function Crediario({ addToast }: Props) {
             </table>
           </div>
         }
-        <div className="border-t border-gray-100 bg-gray-50 px-5 py-3"><span className="text-xs text-gray-500">{filtered.length} parcelas</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 bg-gray-50 px-5 py-3.5">
+          <span className="text-xs text-gray-500">Exibindo {rangeStart}–{rangeEnd} de {filtered.length} parcelas</span>
+          <div className="flex items-center gap-1.5">
+            <button disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs transition-colors hover:bg-white disabled:opacity-40">← Anterior</button>
+            {Array.from({ length: pages }, (_, index) => index + 1).map(number => <button key={number} onClick={() => setPage(number)} className={`h-8 w-8 rounded-lg text-xs transition-colors ${currentPage === number ? 'bg-blue-600 text-white' : 'border border-gray-200 text-gray-600 hover:bg-white'}`}>{number}</button>)}
+            <button disabled={currentPage === pages} onClick={() => setPage(currentPage + 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs transition-colors hover:bg-white disabled:opacity-40">Próximo →</button>
+          </div>
+        </div>
       </div>
 
       {detailTarget && <Modal title="Pagamento confirmado" onClose={() => setDetailTarget(null)}>
@@ -197,7 +224,10 @@ export function Crediario({ addToast }: Props) {
               ['Valor', money(detailTarget.value)], ['Pago em', detailTarget.payment_date ? new Date(detailTarget.payment_date).toLocaleString('pt-BR') : '—'],
             ].map(([label, value]) => <div key={label} className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-400">{label}</p><p className="mt-1 text-sm font-semibold text-gray-800">{value}</p></div>)}
           </div>
-          <div><p className="mb-1 text-xs font-medium text-gray-500">Recebido por</p><p className="text-sm text-gray-800">{detailTarget.payment_operator || '—'}</p></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><p className="mb-1 text-xs font-medium text-gray-500">Recebido por</p><p className="text-sm text-gray-800">{detailTarget.payment_operator || '—'}</p></div>
+            <div><p className="mb-1 text-xs font-medium text-gray-500">Forma de recebimento</p><p className="text-sm text-gray-800">{detailTarget.payment_method ? PAYMENT_METHOD_LABELS[detailTarget.payment_method] : '—'}</p></div>
+          </div>
           <div><p className="mb-1 text-xs font-medium text-gray-500">Observação do pagamento</p><p className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-gray-700">{detailTarget.payment_observation || 'Sem observações.'}</p></div>
         </div>
       </Modal>}
@@ -211,10 +241,21 @@ export function Crediario({ addToast }: Props) {
             <div className="flex justify-between text-sm"><span className="text-gray-500">Vencimento</span><span className="font-medium text-gray-900">{formatDate(payTarget.due_date)}</span></div>
             <div className="mt-1 flex justify-between border-t border-gray-200 pt-2 text-sm font-semibold"><span className="text-gray-500">Valor</span><span className="text-lg text-gray-900">{money(payTarget.value)}</span></div>
           </div>
+          <div>
+            <p className="mb-2 text-sm font-medium text-gray-700">Forma de recebimento</p>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { id: 'pix', label: 'PIX', icon: '📱' },
+                { id: 'dinheiro', label: 'Dinheiro', icon: '💵' },
+                { id: 'debito', label: 'Cartão de débito', icon: '💳' },
+                { id: 'credito', label: 'Cartão de crédito', icon: '💳' },
+              ] as { id: InstallmentPaymentMethod; label: string; icon: string }[]).map(method => <button key={method.id} type="button" onClick={() => setPayMethod(method.id)} className={`rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${payMethod === method.id ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'}`}><span className="mr-2">{method.icon}</span>{method.label}</button>)}
+            </div>
+          </div>
           <div><label htmlFor="installment-payment-observation" className="mb-1.5 block text-sm font-medium text-gray-700">Observação</label><textarea id="installment-payment-observation" value={payObs} onChange={event => setPayObs(event.target.value)} rows={2} maxLength={5000} className="w-full resize-none rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Opcional..." /></div>
           <div className="flex gap-3">
             <button disabled={paying} onClick={() => setPayTarget(null)} className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60">Cancelar</button>
-            <button disabled={paying} onClick={handlePay} className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60">{paying ? 'Registrando...' : 'Confirmar pagamento'}</button>
+            <button disabled={paying || !payMethod} onClick={handlePay} className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">{paying ? 'Registrando...' : 'Confirmar pagamento integral'}</button>
           </div>
         </div>
       </Modal>}

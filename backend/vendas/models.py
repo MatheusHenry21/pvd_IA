@@ -54,6 +54,12 @@ class ItemVenda(models.Model):
 
 class Parcela(models.Model):
     STATUS_CHOICES = [('pendente', 'Pendente'), ('pago', 'Pago')]
+    PAYMENT_METHODS = [
+        ('dinheiro', 'Dinheiro'),
+        ('pix', 'PIX'),
+        ('debito', 'Cartão de débito'),
+        ('credito', 'Cartão de crédito'),
+    ]
 
     sale = models.ForeignKey(Venda, on_delete=models.CASCADE, related_name='installments')
     number = models.PositiveSmallIntegerField()
@@ -62,6 +68,7 @@ class Parcela(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pendente')
     paid_at = models.DateTimeField(null=True, blank=True)
     paid_by = models.CharField(max_length=150, blank=True)
+    payment_method = models.CharField(max_length=12, choices=PAYMENT_METHODS, blank=True)
     payment_observation = models.TextField(blank=True)
 
     class Meta:

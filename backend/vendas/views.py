@@ -229,6 +229,7 @@ class PayInstallmentView(SalesView):
     def post(self, request, pk):
         serializer = InstallmentPaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        payment_method = serializer.validated_data['payment_method']
         observation = serializer.validated_data.get('observation', '').strip()
         with transaction.atomic():
             caixa = Caixa.objects.select_for_update().filter(is_open=True).first()
@@ -245,7 +246,7 @@ class PayInstallmentView(SalesView):
             operator = request.user.get_full_name().strip() or request.user.get_username()
             if not Parcela.objects.filter(pk=installment.pk, status='pendente').update(
                 status='pago', paid_at=now, paid_by=operator,
-                payment_observation=observation,
+                payment_method=payment_method, payment_observation=observation,
             ):
                 return Response({'detail': 'Esta parcela já foi paga.'}, status=409)
 
@@ -266,7 +267,7 @@ class PayInstallmentView(SalesView):
                 category='venda',
                 value=installment.value,
                 description=f'Parcela {installment.number}/{installment.sale.installment_count} da venda #{installment.sale_id}',
-                notes=observation or 'Recebimento de crediário',
+                notes=f'Pagamento: {dict(Parcela.PAYMENT_METHODS)[payment_method]}' + (f' · {observation}' if observation else ''),
                 responsible=operator,
                 request_id=uuid4(),
             )

@@ -25,7 +25,7 @@ class ParcelaSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'sale', 'sale_id', 'client', 'client_cpf', 'num', 'number', 'due_date',
             'value', 'status', 'payment_date', 'payment_operator',
-            'payment_observation',
+            'payment_method', 'payment_observation',
         ]
 
     def get_sale(self, obj):
@@ -83,4 +83,5 @@ class VendaCreateSerializer(serializers.Serializer):
 
 
 class InstallmentPaymentSerializer(serializers.Serializer):
+    payment_method = serializers.ChoiceField(choices=[method[0] for method in Parcela.PAYMENT_METHODS])
     observation = serializers.CharField(required=False, allow_blank=True, max_length=5000)

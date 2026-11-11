@@ -167,23 +167,25 @@ class SalesApiTests(TestCase):
 
         response = self.api.post(
             f'/api/vendas/parcelas/{installment.pk}/pagar/',
-            {'observation': 'Recebido em dinheiro.'},
+            {'payment_method': 'dinheiro', 'observation': 'Recebido em dinheiro.'},
             format='json',
         )
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['status'], 'pago')
         self.assertEqual(response.data['payment_operator'], 'Ana Martins')
+        self.assertEqual(response.data['payment_method'], 'dinheiro')
         self.assertEqual(response.data['payment_observation'], 'Recebido em dinheiro.')
         client.refresh_from_db()
         self.caixa.refresh_from_db()
         self.assertEqual(client.debt_balance, Decimal('25.00'))
         self.assertEqual(self.caixa.balance, Decimal('125.00'))
         self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa).count(), 1)
+        self.assertIn('Dinheiro', Movimentacao.objects.get(caixa=self.caixa).notes)
 
         duplicate = self.api.post(
             f'/api/vendas/parcelas/{installment.pk}/pagar/',
-            {'observation': 'Tentativa repetida.'},
+            {'payment_method': 'dinheiro', 'observation': 'Tentativa repetida.'},
             format='json',
         )
         self.assertEqual(duplicate.status_code, 409)
@@ -201,13 +203,61 @@ class SalesApiTests(TestCase):
         self.caixa.is_open = False
         self.caixa.save(update_fields=['is_open'])
 
-        response = self.api.post(f'/api/vendas/parcelas/{installment.pk}/pagar/', {}, format='json')
+        response = self.api.post(f'/api/vendas/parcelas/{installment.pk}/pagar/', {'payment_method': 'pix'}, format='json')
 
         self.assertEqual(response.status_code, 409)
         installment.refresh_from_db()
         client.refresh_from_db()
         self.assertEqual(installment.status, 'pendente')
         self.assertEqual(client.debt_balance, Decimal('50.00'))
+        self.assertEqual(Movimentacao.objects.count(), 0)
+
+    def test_installment_payment_accepts_and_saves_each_selected_method(self):
+        client = self.make_client()
+        sale_response = self.api.post('/api/vendas/', self.payload(
+            payment_method='crediario',
+            client_id=client.pk,
+            installment_count=4,
+            first_due_date='2026-12-10',
+        ), format='json')
+        self.assertEqual(sale_response.status_code, 201, sale_response.data)
+        installments = list(Parcela.objects.filter(sale_id=sale_response.data['id']).order_by('number'))
+        methods = ['pix', 'dinheiro', 'debito', 'credito']
+
+        for installment, method in zip(installments, methods):
+            response = self.api.post(
+                f'/api/vendas/parcelas/{installment.pk}/pagar/',
+                {'payment_method': method},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 200, (method, response.data))
+            self.assertEqual(response.data['payment_method'], method)
+
+        client.refresh_from_db()
+        self.caixa.refresh_from_db()
+        self.assertEqual(client.debt_balance, Decimal('0.00'))
+        self.assertEqual(self.caixa.balance, Decimal('150.00'))
+        self.assertEqual(Movimentacao.objects.filter(caixa=self.caixa).count(), 4)
+
+    def test_installment_payment_requires_a_supported_method(self):
+        client = self.make_client()
+        sale_response = self.api.post('/api/vendas/', self.payload(
+            payment_method='crediario',
+            client_id=client.pk,
+            installment_count=1,
+            first_due_date='2026-12-10',
+        ), format='json')
+        installment = Parcela.objects.get(sale_id=sale_response.data['id'])
+
+        response = self.api.post(
+            f'/api/vendas/parcelas/{installment.pk}/pagar/',
+            {'payment_method': 'crediario'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        installment.refresh_from_db()
+        self.assertEqual(installment.status, 'pendente')
         self.assertEqual(Movimentacao.objects.count(), 0)
 
     def test_client_lookup_prioritizes_similar_names_and_returns_at_most_five(self):
