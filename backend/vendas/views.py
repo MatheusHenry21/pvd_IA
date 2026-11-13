@@ -9,7 +9,7 @@ from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -188,7 +188,7 @@ class SaleCancellationView(APIView):
 
 
 class SalesReportView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     @staticmethod
     def bounds(start, end):
@@ -278,7 +278,7 @@ class SalesReportView(APIView):
 
 
 class TopSellingProductsReportView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         today = timezone.localdate()
@@ -333,7 +333,7 @@ class TopSellingProductsReportView(APIView):
 
 
 class CreditReportView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         today = timezone.localdate()

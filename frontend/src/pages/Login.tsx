@@ -6,7 +6,7 @@ interface LoginProps {
 }
 
 export function Login({ onLogin }: LoginProps) {
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
@@ -15,12 +15,12 @@ export function Login({ onLogin }: LoginProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!username || !password) {
+    if (!email || !password) {
       setError('Preencha todos os campos.')
       return
     }
     setLoading(true)
-    try { onLogin(await login(username, password)) }
+    try { onLogin(await login(email, password)) }
     catch (err) { setError((err as Error).message) }
     finally { setLoading(false) }
   }
@@ -72,16 +72,16 @@ export function Login({ onLogin }: LoginProps) {
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label htmlFor="login-username" className="mb-2 flex items-center gap-3 text-base font-bold text-[#102b59]">
-                <UserIcon /> Usuário
+              <label htmlFor="login-email" className="mb-2 flex items-center gap-3 text-base font-bold text-[#102b59]">
+                <UserIcon /> E-mail
               </label>
               <input
-                id="login-username"
-                type="text"
-                autoComplete="username"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                placeholder="Ex.: admin"
+                id="login-email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="Ex.: nome@empresa.com.br"
                 className="w-full rounded-2xl border-2 border-[#d5deed] bg-white/85 px-5 py-4 text-base text-gray-900 shadow-[0_4px_10px_rgba(15,41,82,.08)] outline-none transition placeholder:text-gray-500 focus:border-[#1454ae] focus:ring-4 focus:ring-blue-100"
               />
             </div>

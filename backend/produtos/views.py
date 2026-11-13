@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.db.models.deletion import ProtectedError
 from rest_framework import viewsets
 from rest_framework.permissions import BasePermission
+from rest_framework.permissions import IsAdminUser
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from django.db.models import Count, F, Q
@@ -39,7 +40,7 @@ class CategoriaViewSet(ResilientModelViewSet):
             raise ValidationError({'detail': 'Categoria em uso por produtos.'})
 
 class StockReportView(APIView):
-    permission_classes = [LocalDevelopmentOrAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get(self, request):
         active_products = Produto.objects.filter(active=True)

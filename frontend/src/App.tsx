@@ -35,7 +35,7 @@ export default function App() {
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id))
 
   if (!user) {
-    return <Login onLogin={setUser} />
+    return <Login onLogin={loggedInUser => { setUser(loggedInUser); setCurrentPage('dashboard') }} />
   }
 
   const pageProps = { addToast }
@@ -56,8 +56,8 @@ export default function App() {
       {currentPage === 'clients' && <Clients {...pageProps} />}
       {currentPage === 'caixa' && <Caixa {...pageProps} user={user} />}
       {currentPage === 'crediario' && <Crediario {...pageProps} />}
-      {currentPage === 'reports' && <Reports {...pageProps} />}
-      {currentPage === 'users' && <Users {...pageProps} />}
+      {currentPage === 'reports' && user.role === 'administrador' && <Reports {...pageProps} />}
+      {currentPage === 'users' && user.role === 'administrador' && <Users {...pageProps} currentUserId={user.id} />}
       {currentPage === 'settings' && <Settings {...pageProps} theme={theme} onThemeChange={setTheme} />}
     </Layout>
   )

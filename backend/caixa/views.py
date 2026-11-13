@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from .models import Caixa, Movimentacao
 from .serializers import OpenSerializer, MovementSerializer, CloseSerializer
 
@@ -161,6 +161,8 @@ class HistoryView(CashAPIView):
 
 
 class CashReportView(CashAPIView):
+    permission_classes = [IsAdminUser]
+
     def get(self, request):
         today = timezone.localdate()
         period = request.query_params.get('period', '7d')

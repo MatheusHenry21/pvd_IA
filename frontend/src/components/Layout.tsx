@@ -160,7 +160,7 @@ export function Layout({ currentPage, onNavigate, onLogout, toasts, onRemoveToas
 
         {/* Nav */}
         <nav className="flex-1 py-3 space-y-0.5 px-2 overflow-y-auto">
-          {NAV_ITEMS.filter(i => i.id !== 'logout').map(item => {
+          {NAV_ITEMS.filter(i => i.id !== 'logout' && (user.role === 'administrador' || (i.id !== 'reports' && i.id !== 'users'))).map(item => {
             const isActive = currentPage === item.id
             return (
               <button
@@ -188,7 +188,7 @@ export function Layout({ currentPage, onNavigate, onLogout, toasts, onRemoveToas
               </div>
               <div className="min-w-0">
                 <p className="text-white text-sm font-medium truncate">{user.name}</p>
-                <p className="text-slate-500 text-xs">{user.is_staff ? 'Administrador' : 'Usuário'}</p>
+                <p className="text-slate-500 text-xs">{user.role === 'administrador' ? 'Administrador' : 'Operador'}</p>
               </div>
             </div>
           )}
