@@ -6,7 +6,7 @@ interface Props {
 }
 
 interface Product {
-  id: string; code: string; name: string; category: string; price: number; stock: number; active: boolean
+  id: string; code: string; name: string; category: string; price: number; stock: number; minimum_stock: number; active: boolean
 }
 
 const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '')
@@ -28,7 +28,7 @@ async function requestApi(path: string, options?: RequestInit) {
 }
 const normalize = (product: Product): Product => ({ ...product, id: String(product.id), price: Number(product.price) })
 
-const emptyForm = (): Omit<Product, 'id'> => ({ code: '', name: '', category: '', price: 0, stock: 0, active: true })
+const emptyForm = (): Omit<Product, 'id'> => ({ code: '', name: '', category: '', price: 0, stock: 0, minimum_stock: 5, active: true })
 
 export function Products({ addToast }: Props) {
   const [products, setProducts] = useState<Product[]>([])
@@ -70,12 +70,12 @@ export function Products({ addToast }: Props) {
   const paginated = filtered.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE)
 
   const openNew = () => { setEditing(null); setForm({ ...emptyForm(), category: categories[0] || '' }); setShowForm(true) }
-  const openEdit = (p: Product) => { setEditing(p); setForm({ code: p.code, name: p.name, category: p.category, price: p.price, stock: p.stock, active: p.active }); setShowForm(true) }
+  const openEdit = (p: Product) => { setEditing(p); setForm({ code: p.code, name: p.name, category: p.category, price: p.price, stock: p.stock, minimum_stock: p.minimum_stock, active: p.active }); setShowForm(true) }
 
   const handleSave = async () => {
     if (busy) return
     if (!form.name.trim() || !form.code.trim() || !form.category) { addToast('error', 'Preencha código, nome e categoria.'); return }
-    if (!Number.isFinite(form.price) || form.price < 0 || form.price > 9999999999.99 || form.stock < 0 || form.stock > 2147483647 || !Number.isInteger(form.stock)) { addToast('error', 'Informe preço e estoque válidos, não negativos.'); return }
+    if (!Number.isFinite(form.price) || form.price < 0 || form.price > 9999999999.99 || form.stock < 0 || form.stock > 2147483647 || !Number.isInteger(form.stock) || form.minimum_stock < 0 || form.minimum_stock > 2147483647 || !Number.isInteger(form.minimum_stock)) { addToast('error', 'Informe preço, estoque e estoque mínimo válidos, não negativos.'); return }
     setBusy(true)
     try {
       const saved = normalize(await requestApi(editing ? `produtos/${editing.id}/` : 'produtos/', {
@@ -189,9 +189,10 @@ export function Products({ addToast }: Props) {
                 <td className="px-5 py-3.5"><span className="bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded-md">{p.category}</span></td>
                 <td className="px-5 py-3.5 font-semibold text-gray-900">R$ {p.price.toFixed(2).replace('.', ',')}</td>
                 <td className="px-5 py-3.5">
-                  <span className={`font-semibold ${p.stock === 0 ? 'text-red-600' : p.stock <= 5 ? 'text-amber-600' : 'text-gray-900'}`}>{p.stock}</span>
+                  <span className={`font-semibold ${p.stock === 0 ? 'text-red-600' : p.stock <= p.minimum_stock ? 'text-amber-600' : 'text-gray-900'}`}>{p.stock}</span>
+                  <span className="ml-2 text-xs text-gray-400">mín. {p.minimum_stock}</span>
                   {p.stock === 0 && <span className="ml-2 text-xs text-red-500">Sem estoque</span>}
-                  {p.stock > 0 && p.stock <= 5 && <span className="ml-2 text-xs text-amber-500">Baixo</span>}
+                  {p.stock > 0 && p.stock <= p.minimum_stock && <span className="ml-2 text-xs text-amber-500">Baixo</span>}
                 </td>
                 <td className="px-5 py-3.5">
                   <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${p.active ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-gray-100 text-gray-500 ring-gray-500/20'}`}>
@@ -255,6 +256,9 @@ export function Products({ addToast }: Props) {
                   <input type="number" min="0" value={form.stock || ''} onChange={e => setForm(f => ({ ...f, stock: Number(e.target.value) || 0 }))} className={inputCls} />
                 </FormField>
               </div>
+              <FormField label="Estoque mínimo">
+                <input type="number" min="0" value={form.minimum_stock} onChange={e => setForm(f => ({ ...f, minimum_stock: Number(e.target.value) || 0 }))} className={inputCls} />
+              </FormField>
               <label className="flex items-center gap-3 cursor-pointer">
                 <div onClick={() => setForm(f => ({ ...f, active: !f.active }))} className={`w-10 h-5.5 rounded-full transition-colors relative ${form.active ? 'bg-blue-600' : 'bg-gray-200'}`}>
                   <div className={`absolute top-0.5 w-4.5 h-4.5 bg-white rounded-full shadow transition-transform ${form.active ? 'translate-x-5' : 'translate-x-0.5'}`} />

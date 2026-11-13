@@ -1,5 +1,15 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { Page, Toast } from '../App'
+import { authHeaders } from '../auth'
+
+interface NotificationItem {
+  id: string
+  title: string
+  message: string
+  target: Page
+}
+
+const API_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api').replace(/\/$/, '')
 
 const NAV_ITEMS: { id: Page | 'logout'; label: string; icon: React.ReactElement }[] = [
   {
@@ -94,7 +104,31 @@ interface LayoutProps {
 export function Layout({ currentPage, onNavigate, onLogout, toasts, onRemoveToast, children, theme, user }: LayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
-  const [unread, setUnread] = useState(3)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [notificationsError, setNotificationsError] = useState('')
+  const [notificationRefresh, setNotificationRefresh] = useState(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadNotifications = () => {
+      fetch(`${API_URL}/dashboard/`, { headers: authHeaders(), cache: 'no-store', signal: controller.signal })
+        .then(async response => {
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Não foi possível carregar as notificações.')
+          setNotifications(Array.isArray(data.notifications) ? data.notifications : [])
+          setNotificationsError('')
+        })
+        .catch(error => {
+          if (!controller.signal.aborted) setNotificationsError(error instanceof Error ? error.message : 'Não foi possível carregar as notificações.')
+        })
+    }
+    loadNotifications()
+    const timer = window.setInterval(loadNotifications, 60_000)
+    return () => {
+      controller.abort()
+      window.clearInterval(timer)
+    }
+  }, [notificationRefresh])
 
   return (
     <div className={`${theme === 'dark' ? 'dark' : ''} flex h-screen bg-gray-50 overflow-hidden`}>
@@ -103,14 +137,11 @@ export function Layout({ currentPage, onNavigate, onLogout, toasts, onRemoveToas
         {/* Logo */}
         <div className="h-14 flex items-center px-4 border-b border-slate-800">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 bg-blue-600 rounded-md flex items-center justify-center flex-shrink-0">
-              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
-                <path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" />
-              </svg>
+            <div className="w-7 h-7 flex items-center justify-center flex-shrink-0">
+              <img src="/images/simbolo.png" alt="Símbolo da Indústria de Gesso Santo Antônio" className="w-full h-full object-contain" />
             </div>
             {!sidebarCollapsed && (
-              <span className="font-display font-700 text-white text-lg tracking-tight">PVDPro</span>
+              <img src="/images/nome-logo.png" alt="Indústria de Gesso Santo Antônio" className="h-10 w-auto max-w-[160px] object-contain flex-shrink-0" />
             )}
           </div>
           <button
@@ -191,31 +222,25 @@ export function Layout({ currentPage, onNavigate, onLogout, toasts, onRemoveToas
             </div>
             <div className="w-px h-8 bg-gray-200" />
             <div className="relative">
-              <button onClick={() => setShowNotifications(v => !v)} className="relative p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors" aria-label="Abrir notificações">
+              <button onClick={() => { setShowNotifications(v => !v); setNotificationRefresh(value => value + 1) }} className="relative p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors" aria-label={`Abrir notificações${notifications.length ? `, ${notifications.length} alertas ativos` : ''}`} aria-expanded={showNotifications}>
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
                 </svg>
-                {unread > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />}
+                {notifications.length > 0 && <span className="absolute top-1.5 right-1.5 min-w-2 min-h-2 px-1 bg-red-500 rounded-full text-[9px] leading-3 text-white text-center">{notifications.length > 1 ? notifications.length : ''}</span>}
               </button>
               {showNotifications && (
                 <div className="absolute right-0 top-11 w-96 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden z-50">
                   <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-                    <div><p className="font-display font-700 text-sm text-gray-900">Notificações</p><p className="text-xs text-gray-400">{unread} novos alertas</p></div>
-                    <button onClick={() => setUnread(0)} className="text-xs font-medium text-blue-600">Marcar como lidas</button>
+                    <div><p className="font-display font-700 text-sm text-gray-900">Notificações</p><p className="text-xs text-gray-400">{notifications.length} alerta(s) ativo(s)</p></div>
                   </div>
                   <div className="divide-y divide-gray-100">
-                    {[
-                      ['2 parcelas vencidas', 'R$ 410,00 aguardando recebimento.', 'Há 12 min', 'crediario'],
-                      ['Estoque baixo', '3 produtos atingiram o estoque mínimo.', 'Há 35 min', 'products'],
-                      ['Fechamento de caixa', 'O caixa atual está aberto há 8 horas.', 'Há 1 h', 'caixa'],
-                    ].map(([title, text, time, page], index) => (
-                      <button key={title} onClick={() => { setShowNotifications(false); onNavigate(page as Page) }} className="w-full flex gap-3 p-4 text-left hover:bg-gray-50">
-                        <span className={`w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold flex-shrink-0 ${index === 0 ? 'bg-red-100 text-red-600' : index === 1 ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'}`}>{index === 0 ? '$' : index === 1 ? '!' : 'C'}</span>
-                        <span><span className="block text-sm font-semibold text-gray-800">{title}</span><span className="block text-xs text-gray-500 mt-0.5">{text}</span><span className="block text-xs text-gray-400 mt-1.5">{time}</span></span>
+                    {notificationsError ? <p role="alert" className="p-4 text-sm text-red-600">{notificationsError}</p> : notifications.length ? notifications.map(notification => (
+                      <button key={notification.id} onClick={() => { setShowNotifications(false); onNavigate(notification.target) }} className="w-full flex gap-3 p-4 text-left hover:bg-gray-50">
+                        <span className={`w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold flex-shrink-0 ${notification.id === 'overdue-installments' ? 'bg-red-100 text-red-600' : notification.id === 'low-stock' ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'}`}>{notification.id === 'overdue-installments' ? '$' : notification.id === 'low-stock' ? '!' : 'C'}</span>
+                        <span><span className="block text-sm font-semibold text-gray-800">{notification.title}</span><span className="block text-xs text-gray-500 mt-0.5">{notification.message}</span></span>
                       </button>
-                    ))}
+                    )) : <p className="p-5 text-center text-sm text-gray-500">Nenhuma notificação no momento.</p>}
                   </div>
-                  <button onClick={() => { setShowNotifications(false); onNavigate('settings') }} className="w-full py-3 text-xs font-semibold text-blue-600 bg-gray-50 hover:bg-gray-100">Configurar notificações</button>
                 </div>
               )}
             </div>

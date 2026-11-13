@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import date, datetime, time, timedelta
 from django.db import transaction, IntegrityError, OperationalError
 from django.db.models import F
 from django.shortcuts import get_object_or_404
@@ -157,3 +158,96 @@ class HistoryView(CashAPIView):
                         'value': str(m.value), 'notes': m.notes, 'responsible': m.responsible} for m in movements],
                 })
         return Response({'sessions': sessions, 'totals': {'sessions': len(sessions), 'revenue': str(revenue), 'withdrawals': str(withdrawals), 'deposits': str(deposits)}})
+
+
+class CashReportView(CashAPIView):
+    def get(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get('period', '7d')
+        if period in ('7d', '30d', '90d'):
+            days = int(period[:-1])
+            end = today
+            start = end - timedelta(days=days - 1)
+        elif period == 'custom':
+            try:
+                start = date.fromisoformat(request.query_params.get('from', ''))
+                end = date.fromisoformat(request.query_params.get('to', ''))
+                if start > end or end == date.max:
+                    raise ValueError()
+            except ValueError:
+                raise ValidationError({'detail': 'Informe datas válidas, com início anterior ou igual ao fim.'})
+        else:
+            raise ValidationError({'detail': 'Selecione 7, 30, 90 dias ou um período personalizado.'})
+
+        start_dt = timezone.make_aware(datetime.combine(start, time.min))
+        end_dt = timezone.make_aware(datetime.combine(end + timedelta(days=1), time.min))
+        sessions = list(Caixa.objects.filter(
+            is_open=False,
+            closed_at__gte=start_dt,
+            closed_at__lt=end_dt,
+        ).prefetch_related('movements').order_by('-closed_at', '-id'))
+
+        initial_balance = Decimal('0.00')
+        entries = Decimal('0.00')
+        exits = Decimal('0.00')
+        difference = Decimal('0.00')
+        category_totals = {'venda': Decimal('0.00'), 'suprimento': Decimal('0.00'), 'sangria': Decimal('0.00')}
+        category_counts = {'venda': 0, 'suprimento': 0, 'sangria': 0}
+        recent_sessions = []
+
+        for caixa in sessions:
+            initial_balance += caixa.initial_value
+            expected = caixa.balance
+            counted = caixa.counted_value
+            movements = list(caixa.movements.all())
+            session_sales = sum((movement.value for movement in movements if movement.category == 'venda'), Decimal('0.00'))
+            session_supplies = sum((movement.value for movement in movements if movement.category == 'suprimento'), Decimal('0.00'))
+            session_withdrawals = sum((movement.value for movement in movements if movement.category == 'sangria'), Decimal('0.00'))
+            entries += session_sales + session_supplies
+            exits += session_withdrawals
+            if counted is not None:
+                difference += counted - expected
+
+            for movement in movements:
+                category_totals[movement.category] += movement.value
+                category_counts[movement.category] += 1
+
+        total_movement_value = sum(category_totals.values(), Decimal('0.00'))
+        movement_labels = {'venda': 'Vendas', 'suprimento': 'Suprimentos', 'sangria': 'Sangrias'}
+        movement_colors = {'venda': 'blue', 'suprimento': 'emerald', 'sangria': 'red'}
+        movements_data = [{
+            'category': category,
+            'label': movement_labels[category],
+            'amount': str(category_totals[category]),
+            'count': category_counts[category],
+            'percentage': str(category_totals[category] / total_movement_value * 100 if total_movement_value else Decimal('0.00')),
+            'color': movement_colors[category],
+        } for category in ('venda', 'suprimento', 'sangria')]
+
+        for caixa in sessions[:3]:
+            expected = caixa.balance
+            counted = caixa.counted_value
+            closed_at = timezone.localtime(caixa.closed_at)
+            recent_sessions.append({
+                'id': caixa.pk,
+                'date': closed_at.isoformat(),
+                'operator': caixa.closed_by or 'Não informado',
+                'expected': str(expected),
+                'counted': str(counted) if counted is not None else None,
+                'difference': str(counted - expected) if counted is not None else None,
+            })
+
+        return Response({
+            'period': period,
+            'from': start.isoformat(),
+            'to': end.isoformat(),
+            'summary': {
+                'initial_balance': str(initial_balance),
+                'entries': str(entries),
+                'exits': str(exits),
+                'difference': str(difference),
+                'sessions_count': len(sessions),
+            },
+            'movements': movements_data,
+            'recent_sessions': recent_sessions,
+        })

@@ -12,7 +12,8 @@ class CategoriaSerializer(serializers.ModelSerializer):
 
 class ProdutoSerializer(serializers.ModelSerializer):
     stock = serializers.IntegerField(min_value=0, max_value=2147483647, required=False)
+    minimum_stock = serializers.IntegerField(min_value=0, max_value=2147483647, required=False)
     category = serializers.SlugRelatedField(slug_field='name', queryset=Categoria.objects.all())
     class Meta:
         model = Produto
-        fields = ['id', 'name', 'code', 'category', 'price', 'stock', 'active']
+        fields = ['id', 'name', 'code', 'category', 'price', 'stock', 'minimum_stock', 'active']

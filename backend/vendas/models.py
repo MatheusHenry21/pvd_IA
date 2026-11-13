@@ -78,3 +78,19 @@ class Parcela(models.Model):
             models.CheckConstraint(condition=models.Q(number__gt=0), name='parcela_number_positive'),
             models.CheckConstraint(condition=models.Q(value__gt=0), name='parcela_value_positive'),
         ]
+
+
+class CancelamentoVenda(models.Model):
+    request_id = models.UUIDField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    operator = models.CharField(max_length=150)
+    item_count = models.PositiveIntegerField()
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    payment_method = models.CharField(max_length=12, choices=Venda.PAYMENT_METHODS, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(item_count__gt=0), name='cancelamento_venda_items_positive'),
+            models.CheckConstraint(condition=models.Q(amount__gte=0), name='cancelamento_venda_amount_nonnegative'),
+        ]

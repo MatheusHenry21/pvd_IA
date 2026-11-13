@@ -1,10 +1,11 @@
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 from django.db import IntegrityError, OperationalError, transaction
-from django.db.models import Case, F, IntegerField, Q, Value, When
+from django.db.models import Case, Count, F, IntegerField, Min, Q, Sum, Value, When
+from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -15,8 +16,8 @@ from rest_framework.views import APIView
 from caixa.models import Caixa, Movimentacao
 from clientes.models import Cliente
 from produtos.models import Produto
-from .models import ItemVenda, Parcela, Venda
-from .serializers import InstallmentPaymentSerializer, ParcelaSerializer, VendaCreateSerializer, VendaSerializer
+from .models import CancelamentoVenda, ItemVenda, Parcela, Venda
+from .serializers import InstallmentPaymentSerializer, ParcelaSerializer, VendaCancelamentoSerializer, VendaCreateSerializer, VendaSerializer
 
 
 def add_months(anchor: date, months: int) -> date:
@@ -169,6 +170,244 @@ class SalesView(APIView):
 
             sale = Venda.objects.prefetch_related('items', 'installments').get(pk=sale.pk)
             return Response(VendaSerializer(sale).data, status=201)
+
+
+class SaleCancellationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = VendaCancelamentoSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        existing = CancelamentoVenda.objects.filter(request_id=data['request_id']).first()
+        if existing:
+            return Response({'id': existing.pk, 'created': False})
+        operator = request.user.get_full_name().strip() or request.user.get_username()
+        cancellation = CancelamentoVenda.objects.create(operator=operator, **data)
+        return Response({'id': cancellation.pk, 'created': True}, status=201)
+
+
+class SalesReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def bounds(start, end):
+        current_tz = timezone.get_current_timezone()
+        start_dt = timezone.make_aware(datetime.combine(start, time.min), current_tz)
+        end_dt = timezone.make_aware(datetime.combine(end + timedelta(days=1), time.min), current_tz)
+        return start_dt, end_dt
+
+    def summarize(self, start, end):
+        start_dt, end_dt = self.bounds(start, end)
+        sales = Venda.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+        totals = sales.aggregate(revenue=Sum('total'), sales_count=Count('id'))
+        revenue = totals['revenue'] or Decimal('0.00')
+        count = totals['sales_count'] or 0
+        payment_rows = sales.order_by().values('payment_method').annotate(revenue=Sum('total'), count=Count('id'))
+        payment_data = {row['payment_method']: row for row in payment_rows}
+        payments = [{
+            'method': method,
+            'label': label,
+            'revenue': str(payment_data.get(method, {}).get('revenue') or Decimal('0.00')),
+            'count': payment_data.get(method, {}).get('count', 0),
+        } for method, label in Venda.PAYMENT_METHODS]
+        payments.sort(key=lambda row: (-Decimal(row['revenue']), row['label']))
+        cancellations = CancelamentoVenda.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt).count()
+        return {
+            'revenue': str(revenue),
+            'sales_count': count,
+            'average_ticket': str(revenue / count if count else Decimal('0.00')),
+            'cancellations': cancellations,
+            'payments': payments,
+        }
+
+    def get(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get('period', '7d')
+        if period in ('7d', '30d', '90d'):
+            days = int(period[:-1])
+            end = today
+            start = end - timedelta(days=days - 1)
+        elif period == 'custom':
+            try:
+                start = date.fromisoformat(request.query_params.get('from', ''))
+                end = date.fromisoformat(request.query_params.get('to', ''))
+                if start > end or end == date.max:
+                    raise ValueError()
+                days = (end - start).days + 1
+            except ValueError:
+                raise ValidationError({'detail': 'Informe datas válidas, com início anterior ou igual ao fim.'})
+        else:
+            raise ValidationError({'detail': 'Selecione 7, 30, 90 dias ou um período personalizado.'})
+
+        previous_end = start - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=days - 1)
+        current = self.summarize(start, end)
+        previous = self.summarize(previous_start, previous_end)
+
+        chart_start = today - timedelta(days=6)
+        chart_start_dt, chart_end_dt = self.bounds(chart_start, today)
+        chart_rows = Venda.objects.filter(
+            created_at__gte=chart_start_dt, created_at__lt=chart_end_dt,
+        ).order_by().annotate(local_day=TruncDate('created_at', tzinfo=timezone.get_current_timezone())).values('local_day').annotate(
+            revenue=Sum('total'), count=Count('id'),
+        )
+        chart_data = {row['local_day']: row for row in chart_rows}
+        weekday_names = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+        daily = []
+        for offset in range(7):
+            day = chart_start + timedelta(days=offset)
+            row = chart_data.get(day, {})
+            daily.append({
+                'date': day.isoformat(),
+                'label': weekday_names[day.weekday()],
+                'revenue': str(row.get('revenue') or Decimal('0.00')),
+                'count': row.get('count', 0),
+                'is_today': day == today,
+            })
+
+        return Response({
+            'ranges': {
+                'from': start.isoformat(), 'to': end.isoformat(),
+                'previous_from': previous_start.isoformat(), 'previous_to': previous_end.isoformat(),
+            },
+            'current': current,
+            'previous': previous,
+            'daily': daily,
+        })
+
+
+class TopSellingProductsReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get('period', '30d')
+        if period in ('7d', '30d', '90d'):
+            days = int(period[:-1])
+            end = today
+            start = end - timedelta(days=days - 1)
+        elif period == 'custom':
+            try:
+                start = date.fromisoformat(request.query_params.get('from', ''))
+                end = date.fromisoformat(request.query_params.get('to', ''))
+                if start > end or end == date.max:
+                    raise ValueError()
+            except ValueError:
+                raise ValidationError({'detail': 'Informe datas válidas, com início anterior ou igual ao fim.'})
+        else:
+            raise ValidationError({'detail': 'Selecione 7, 30, 90 dias ou um período personalizado.'})
+
+        start_dt, end_dt = SalesReportView.bounds(start, end)
+        items = ItemVenda.objects.filter(sale__created_at__gte=start_dt, sale__created_at__lt=end_dt)
+        total_revenue = items.aggregate(total=Sum('line_total'))['total'] or Decimal('0.00')
+        rows = items.order_by().values(
+            'product_id', 'product__name', 'product__code',
+        ).annotate(
+            quantity=Sum('quantity'),
+            revenue=Sum('line_total'),
+            sales_count=Count('sale_id', distinct=True),
+        ).order_by('-quantity', '-revenue', 'product__name', 'product_id')[:5]
+
+        results = []
+        for position, row in enumerate(rows, start=1):
+            revenue = row['revenue'] or Decimal('0.00')
+            results.append({
+                'position': position,
+                'product_id': row['product_id'],
+                'name': row['product__name'],
+                'code': row['product__code'],
+                'quantity': row['quantity'],
+                'revenue': str(revenue),
+                'sales_count': row['sales_count'],
+                'participation_pct': str((revenue / total_revenue * 100) if total_revenue else Decimal('0.00')),
+            })
+
+        return Response({
+            'period': period,
+            'from': start.isoformat(),
+            'to': end.isoformat(),
+            'total_revenue': str(total_revenue),
+            'results': results,
+        })
+
+
+class CreditReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get('period', '7d')
+        if period in ('7d', '30d', '90d'):
+            days = int(period[:-1])
+            end = today
+            start = end - timedelta(days=days - 1)
+        elif period == 'custom':
+            try:
+                start = date.fromisoformat(request.query_params.get('from', ''))
+                end = date.fromisoformat(request.query_params.get('to', ''))
+                if start > end or end == date.max:
+                    raise ValueError()
+            except ValueError:
+                raise ValidationError({'detail': 'Informe datas válidas, com início anterior ou igual ao fim.'})
+        else:
+            raise ValidationError({'detail': 'Selecione 7, 30, 90 dias ou um período personalizado.'})
+
+        start_dt, end_dt = SalesReportView.bounds(start, end)
+        period_installments = Parcela.objects.filter(
+            sale__payment_method='crediario',
+            sale__created_at__gte=start_dt,
+            sale__created_at__lt=end_dt,
+        )
+        portfolio = period_installments.aggregate(total=Sum('value'), count=Count('id'))
+        receivable = period_installments.filter(status='pendente').aggregate(total=Sum('value'), count=Count('id'))
+        overdue = period_installments.filter(status='pendente', due_date__lt=today).aggregate(total=Sum('value'), count=Count('id'))
+        received = period_installments.filter(status='pago').aggregate(total=Sum('value'), count=Count('id'))
+
+        overdue_clients = Parcela.objects.filter(
+            sale__payment_method='crediario',
+            sale__customer__isnull=False,
+            status='pendente',
+            due_date__lt=today,
+        ).values('sale__customer_id', 'sale__customer__name').annotate(
+            oldest_due=Min('due_date'),
+            overdue_total=Sum('value'),
+            overdue_count=Count('id'),
+        ).order_by('oldest_due', 'sale__customer__name')[:3]
+
+        debtors = []
+        for row in overdue_clients:
+            open_totals = Parcela.objects.filter(
+                sale__payment_method='crediario',
+                sale__customer_id=row['sale__customer_id'],
+                status='pendente',
+            ).aggregate(total=Sum('value'), count=Count('id'))
+            delay_days = (today - row['oldest_due']).days
+            risk = 'Baixo' if delay_days <= 7 else 'Médio' if delay_days <= 30 else 'Alto'
+            debtors.append({
+                'client_id': row['sale__customer_id'],
+                'name': row['sale__customer__name'],
+                'open_amount': str(open_totals['total'] or Decimal('0.00')),
+                'open_count': open_totals['count'] or 0,
+                'overdue_amount': str(row['overdue_total'] or Decimal('0.00')),
+                'overdue_count': row['overdue_count'],
+                'oldest_due': row['oldest_due'].isoformat(),
+                'delay_days': delay_days,
+                'risk': risk,
+            })
+
+        return Response({
+            'period': period,
+            'from': start.isoformat(),
+            'to': end.isoformat(),
+            'summary': {
+                'portfolio': {'amount': str(portfolio['total'] or Decimal('0.00')), 'installments': portfolio['count'] or 0},
+                'receivable': {'amount': str(receivable['total'] or Decimal('0.00')), 'installments': receivable['count'] or 0},
+                'overdue': {'amount': str(overdue['total'] or Decimal('0.00')), 'installments': overdue['count'] or 0},
+                'received': {'amount': str(received['total'] or Decimal('0.00')), 'installments': received['count'] or 0},
+            },
+            'debtors': debtors,
+        })
 
 
 class ProductSearchView(APIView):

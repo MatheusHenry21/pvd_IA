@@ -143,6 +143,8 @@ export function Sales({ addToast }: Props) {
   const [savedSale, setSavedSale] = useState<SaleRecord | null>(null)
   const [savingSale, setSavingSale] = useState(false)
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+  const [cancellingSale, setCancellingSale] = useState(false)
+  const cancellationRequestId = useRef<string | null>(null)
   const [showClientModal, setShowClientModal] = useState(false)
   const [clientSearch, setClientSearch] = useState('')
   const [clientMatches, setClientMatches] = useState<Client[]>([])
@@ -274,6 +276,7 @@ export function Sales({ addToast }: Props) {
   }
 
   const resetSale = () => {
+    cancellationRequestId.current = null
     setItems([])
     setDiscount('')
     setPayMethod(null)
@@ -510,11 +513,37 @@ export function Sales({ addToast }: Props) {
         </div>
       </div>
 
-      {showCancelConfirm && <Modal title="Cancelar venda?" onClose={() => setShowCancelConfirm(false)}>
+      {showCancelConfirm && <Modal title="Cancelar venda?" onClose={() => { if (!cancellingSale) { cancellationRequestId.current = null; setShowCancelConfirm(false) } }}>
         <p className="mb-5 text-sm text-gray-600">Os produtos e valores desta venda serão descartados. Esta ação não pode ser desfeita.</p>
         <div className="flex gap-3">
-          <button onClick={() => setShowCancelConfirm(false)} className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50">Voltar</button>
-          <button onClick={() => { resetSale(); setShowCancelConfirm(false); addToast('info', 'Venda cancelada.') }} className="flex-1 rounded-lg bg-red-500 py-2.5 text-sm font-semibold text-white hover:bg-red-600">Cancelar venda</button>
+          <button disabled={cancellingSale} onClick={() => { cancellationRequestId.current = null; setShowCancelConfirm(false) }} className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60">Voltar</button>
+          <button disabled={cancellingSale} onClick={async () => {
+            if (items.length > 0) {
+              setCancellingSale(true)
+              try {
+                const requestId = cancellationRequestId.current || crypto.randomUUID()
+                cancellationRequestId.current = requestId
+                await request('/vendas/cancelamentos/', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    request_id: requestId,
+                    amount: total.toFixed(2),
+                    item_count: items.reduce((sum, item) => sum + item.qty, 0),
+                    payment_method: payMethod || '',
+                  }),
+                })
+                cancellationRequestId.current = null
+              } catch (error) {
+                addToast('error', error instanceof Error ? error.message : 'Não foi possível registrar o cancelamento.')
+                setCancellingSale(false)
+                return
+              }
+              setCancellingSale(false)
+            }
+            resetSale()
+            setShowCancelConfirm(false)
+            addToast('info', 'Venda cancelada.')
+          }} className="flex-1 rounded-lg bg-red-500 py-2.5 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-wait disabled:opacity-60">{cancellingSale ? 'Registrando...' : 'Cancelar venda'}</button>
         </div>
       </Modal>}
 

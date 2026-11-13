@@ -14,6 +14,7 @@ class Produto(models.Model):
     category = models.ForeignKey(Categoria, on_delete=models.PROTECT, related_name='products')
     price = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     stock = models.PositiveIntegerField(default=0)
+    minimum_stock = models.PositiveIntegerField(default=5)
     active = models.BooleanField(default=True)
     class Meta:
         ordering = ['-id']

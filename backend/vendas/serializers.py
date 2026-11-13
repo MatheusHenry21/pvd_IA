@@ -85,3 +85,15 @@ class VendaCreateSerializer(serializers.Serializer):
 class InstallmentPaymentSerializer(serializers.Serializer):
     payment_method = serializers.ChoiceField(choices=[method[0] for method in Parcela.PAYMENT_METHODS])
     observation = serializers.CharField(required=False, allow_blank=True, max_length=5000)
+
+
+class VendaCancelamentoSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    item_count = serializers.IntegerField(min_value=1, max_value=100000)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0)
+    payment_method = serializers.ChoiceField(
+        choices=[method[0] for method in Venda.PAYMENT_METHODS],
+        required=False,
+        allow_blank=True,
+        default='',
+    )
